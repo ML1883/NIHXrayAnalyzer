@@ -89,6 +89,12 @@ def setup_model_and_training(dataset_xrays, batch_size=16, learning_rate=0.001):
     
     return model, data_loader, criterion, optimizer, device
 
+def setup_dataloader(dataset_xrays, batch_size=16, num_workers=4, shuffle=True):
+    """Create a dataloader"""
+    data_loader = DataLoader(dataset_xrays, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+    
+    return data_loader
+
 def train_model(model, data_loader, criterion, optimizer, device, num_epochs=10):
     model.train()
     
