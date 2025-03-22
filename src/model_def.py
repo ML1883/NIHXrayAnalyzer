@@ -4,7 +4,7 @@ import numpy as np
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
-from torchvision import transforms
+import torchvision.models as models
 import torch.optim as optim
 from torch.utils.data import DataLoader
 import time
@@ -13,7 +13,52 @@ import os
 import pandas as pd
 
 
+
+class FineTunedResNet18(nn.Module):
+    def __init__(self, num_classes):
+        super(FineTunedResNet18, self).__init__()
+        
+        # Load pretrained ResNet18 model
+        self.model = models.resnet18(weights='DEFAULT')
+        
+        # Modify first conv layer to accept 1-channel grayscale instead of 3-channel RGB
+        self.model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        
+        # Modify classifier to match number of disease classes
+        self.model.fc = nn.Linear(self.model.fc.in_features, num_classes)
+    
+    def forward(self, x):
+        return self.model(x)
+    
+class FineTunedResNet50(nn.Module):
+    """Same idea as resnet 18, just bigger"""
+    def __init__(self, num_classes):
+        super(FineTunedResNet50, self).__init__()
+        
+        self.model = models.resnet50(weights='DEFAULT')
+        self.model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+    
+        self.model.fc = nn.Linear(self.model.fc.in_features, num_classes)
+    
+    def forward(self, x):
+        return self.model(x)
+    
+class FineTunedDenseNet121(nn.Module):
+    """Same idea as the resnets, just a densenet now"""
+    def __init__(self, num_classes):
+        super(FineTunedDenseNet121, self).__init__()
+        
+        self.model = models.densenet121(weights='DEFAULT')
+        self.model.features.conv0 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+    
+        self.model.classifier = nn.Linear(self.model.classifier.in_features, num_classes)
+    
+    def forward(self, x):
+        return self.model(x)
+
+
 class SimpleXrayCNN(nn.Module):
+    """Pretty much a resnet model"""
     def __init__(self, num_classes):
         super(SimpleXrayCNN, self).__init__()
         
@@ -48,10 +93,11 @@ class SimpleXrayCNN(nn.Module):
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=2, stride=2),  # Output: 256 x 4 x 4
+
         )
         
         # Global average pooling to handle variable image sizes
-        # self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
         
         self.classifier = nn.Sequential(
             nn.Flatten(),
@@ -65,11 +111,11 @@ class SimpleXrayCNN(nn.Module):
         # print(f"Input shape: {x.shape}")  # Check initial input shape
         x = self.features(x)
         # print(f"After feature shape: {x.shape}")  # (batch, 256, 4, 4)
-        # x = self.global_pool(x)
+        x = self.global_pool(x)
         x = self.classifier(x)
         return x
 
-def setup_model_and_training(dataset_xrays, batch_size=16, learning_rate=0.001):
+def setup_model_and_training(dataset_xrays, batch_size=16, learning_rate=0.001, model_type="simpleCNN"):
     # Create data loader
     data_loader = DataLoader(dataset_xrays, batch_size=batch_size, shuffle=True, num_workers=4)
     
@@ -79,7 +125,10 @@ def setup_model_and_training(dataset_xrays, batch_size=16, learning_rate=0.001):
     print(f"Classes: {dataset_xrays.classes}")
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = SimpleXrayCNN(num_classes=num_classes)
+    if model_type == "simpleCNN":
+        model = SimpleXrayCNN(num_classes=num_classes)
+    elif model_type == "ResNet18":
+        model = FineTunedResNet18(num_classes=num_classes)
     model = model.to(device)
     print(f"Using device: {device}")
     
