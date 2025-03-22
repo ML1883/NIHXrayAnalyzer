@@ -5,13 +5,14 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 import matplotlib.pyplot as plt
 import seaborn as sns
 import torchvision.models as models
+from torchvision import datasets
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 import time
 from tqdm import tqdm
 import os
 import pandas as pd
-
+from PIL import Image
 
 
 class FineTunedResNet18(nn.Module):
@@ -137,7 +138,8 @@ def setup_model_and_training(dataset_xrays, batch_size=16, learning_rate=0.001, 
     print(f"Using device: {device}")
     
     # Loss function and optimizer
-    criterion = nn.CrossEntropyLoss()
+    # criterion = nn.CrossEntropyLoss()
+    criterion = nn.BCEWithLogitsLoss() #multi class
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     
     return model, data_loader, criterion, optimizer, device
@@ -147,6 +149,7 @@ def setup_dataloader(dataset_xrays, batch_size=16, num_workers=4, shuffle=True):
     data_loader = DataLoader(dataset_xrays, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
     
     return data_loader
+
 
 def train_model(model, data_loader, criterion, optimizer, device, num_epochs=10):
     model.train()
@@ -185,6 +188,327 @@ def train_model(model, data_loader, criterion, optimizer, device, num_epochs=10)
     
     return model
 
+class MultiAttentionXrayCNN(nn.Module):
+    def __init__(self, num_classes, bbox_file_path=None):
+        super(MultiAttentionXrayCNN, self).__init__()
+        
+        # Base CNN backbone (same as before)
+        self.features = nn.Sequential(
+            # First convolutional block
+            nn.Conv2d(1, 16, kernel_size=7, stride=2, padding=3),  # Output: 16 x 512 x 512
+            nn.BatchNorm2d(16),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),  # Output: 16 x 256 x 256
+            
+            # Second convolutional block
+            nn.Conv2d(16, 32, kernel_size=5, stride=2, padding=2),  # Output: 32 x 128 x 128
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),  # Output: 32 x 64 x 64
+            
+            # Third convolutional block
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),  # Output: 64 x 32 x 32
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),  # Output: 64 x 16 x 16
+            
+            # Fourth convolutional block
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),  # Output: 128 x 16 x 16
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),  # Output: 128 x 8 x 8
+            
+            # Fifth convolutional block
+            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),  # Output: 256 x 8 x 8
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),  # Output: 256 x 4 x 4
+        )
+        
+        # Finding-specific attention modules (one per class)
+        self.attention_modules = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv2d(256, 64, kernel_size=1),
+                nn.BatchNorm2d(64),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(64, 1, kernel_size=1),
+                nn.Sigmoid()
+            ) for _ in range(num_classes)
+        ])
+        
+        # Classifier with multi-label output
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(256 * 4 * 4, 512),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.5),
+            nn.Linear(512, num_classes)
+        )
+        
+        # Load and structure bounding box data
+        self.image_finding_map = {}
+        if bbox_file_path:
+            self.load_bbox_data(bbox_file_path)
+    
+    def load_bbox_data(self, file_path):
+        import pandas as pd
+        bbox_data = pd.read_csv(file_path)
+        
+        # Create a nested dictionary: {image_index: {finding_label: [(x, y, w, h), ...]}}
+        for _, row in bbox_data.iterrows():
+            image_index = row['Image Index']
+            finding = row['Finding Label']
+            bbox = (row['x'], row['y'], row['w'], row['h'])
+            
+            if image_index not in self.image_finding_map:
+                self.image_finding_map[image_index] = {}
+            
+            if finding not in self.image_finding_map[image_index]:
+                self.image_finding_map[image_index][finding] = []
+            
+            self.image_finding_map[image_index][finding].append(bbox)
+    
+    def create_attention_mask(self, feature_map_size, bboxes, device):
+        """Create Gaussian attention mask from multiple bounding boxes"""
+        height, width = feature_map_size
+        mask = torch.zeros((height, width), device=device)
+        
+        # Original image dimensions (assuming 1024x1024)
+        orig_h, orig_w = 1024, 1024
+        
+        # Scale factors
+        scale_h = height / orig_h
+        scale_w = width / orig_w
+        
+        # Y and X coordinates for the feature map
+        y_indices = torch.arange(0, height, device=device)
+        x_indices = torch.arange(0, width, device=device)
+        y_grid, x_grid = torch.meshgrid(y_indices, x_indices)
+        
+        # Create combined mask from all bounding boxes for this finding
+        for x, y, w, h in bboxes:
+            # Scale bbox coordinates
+            x_scaled = int(x * scale_w)
+            y_scaled = int(y * scale_h)
+            w_scaled = max(1, int(w * scale_w))
+            h_scaled = max(1, int(h * scale_h))
+            
+            # Calculate center of bounding box
+            center_y = y_scaled + h_scaled // 2
+            center_x = x_scaled + w_scaled // 2
+            
+            # Sigma based on box size
+            sigma = max(h_scaled, w_scaled) / 3
+            
+            # Gaussian mask for this bbox
+            bbox_mask = torch.exp(-((y_grid - center_y)**2 + (x_grid - center_x)**2) / (2 * sigma**2))
+            
+            # Combine with existing mask (take maximum value at each point)
+            mask = torch.maximum(mask, bbox_mask)
+        
+        return mask.unsqueeze(0)  # Add channel dimension
+    
+    def forward(self, x, image_filenames=None, class_mapping=None):
+        batch_size = x.shape[0]
+        device = x.device
+        
+        # Extract features through CNN backbone
+        features = self.features(x)
+        _, _, height, width = features.shape
+        
+        # Initialize combined features
+        combined_features = torch.zeros_like(features)
+        
+        # Process each image with its specific findings
+        for i, filename in enumerate(image_filenames):
+            # Get all class-specific attentions
+            all_attentions = []
+            
+            # If we have bbox data for this image
+            if filename in self.image_finding_map:
+                # For each class/finding that appears in this image
+                for finding, bboxes in self.image_finding_map[filename].items():
+                    # Get class index from class name
+                    if class_mapping and finding in class_mapping:
+                        class_idx = class_mapping[finding]
+                        
+                        # Create attention mask from bounding boxes for this finding
+                        bbox_attention = self.create_attention_mask((height, width), bboxes, device)
+                        
+                        # Get learned attention for this class
+                        learned_attention = self.attention_modules[class_idx](features[i:i+1])
+                        
+                        # Combine bbox and learned attention
+                        combined_attention = bbox_attention * learned_attention
+                        
+                        # Apply attention to features for this class
+                        attended_features = features[i:i+1] * combined_attention
+                        
+                        # Add to the collection
+                        all_attentions.append((class_idx, attended_features))
+                
+                # If we have attentions for this image
+                if all_attentions:
+                    # Average or max-pool the attended features across all findings
+                    # (design choice: you could use different aggregation methods)
+                    combined_features[i] = torch.cat([attn[1] for attn in all_attentions]).mean(dim=0)
+                else:
+                    # No bounding boxes, use original features
+                    combined_features[i] = features[i]
+            else:
+                # No bounding boxes for this image, use original features
+                combined_features[i] = features[i]
+        
+        # If no bounding box data was used at all, just use the original features
+        if torch.sum(combined_features) == 0:
+            combined_features = features
+        
+        # Classify the attended features
+        outputs = self.classifier(combined_features)
+        
+        return outputs
+
+def train_multilabel_model(model, data_loader, device, num_epochs=10):
+    model.train()
+    
+    # Use Binary Cross Entropy loss for multi-label classification
+    criterion = nn.BCEWithLogitsLoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    
+    # Build class mapping (finding name to index)
+    class_mapping = {class_name: idx for idx, class_name in enumerate(data_loader.dataset.classes)}
+    
+    for epoch in range(num_epochs):
+        running_loss = 0.0
+        
+        for inputs, labels, filenames in data_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            
+            # Zero gradients
+            optimizer.zero_grad()
+            
+            # Forward pass with filenames and class mapping
+            outputs = model(inputs, filenames, class_mapping)
+            
+            # Compute loss
+            loss = criterion(outputs, labels)
+            
+            # Backward pass
+            loss.backward()
+            optimizer.step()
+            
+            running_loss += loss.item() * inputs.size(0)
+        
+        epoch_loss = running_loss / len(data_loader.dataset)
+        print(f'Epoch {epoch+1}/{num_epochs}, Loss: {epoch_loss:.4f}')
+
+
+
+class XrayMultiLabelDataset(Dataset):
+    def __init__(self, root_dir, bbox_csv_path, transform=None):
+        """
+        An extension of the standard dataset approach that handles multiple labels per image
+        and incorporates bounding box information.
+        
+        Args:
+            root_dir: Directory containing all images
+            bbox_csv_path: Path to CSV with format (Image Index, Finding Label, x, y, w, h)
+            transform: Image transformations
+        """
+        self.root_dir = root_dir
+        self.transform = transform
+        
+        # Load bounding box data
+        self.bbox_df = pd.read_csv(bbox_csv_path)
+        
+        # Get all unique image filenames
+        self.image_files = self.bbox_df['Image Index'].unique()
+        
+        # Get all unique finding labels (classes)
+        self.classes = sorted(self.bbox_df['Finding Label'].unique())
+        self.class_to_idx = {cls: idx for idx, cls in enumerate(self.classes)}
+        
+        # Build a mapping from image to findings and bboxes
+        self.image_findings = {}
+        for _, row in self.bbox_df.iterrows():
+            img_id = row['Image Index']
+            finding = row['Finding Label']
+            bbox = (row['x'], row['y'], row['w'], row['h'])
+            
+            if img_id not in self.image_findings:
+                self.image_findings[img_id] = {}
+                
+            if finding not in self.image_findings[img_id]:
+                self.image_findings[img_id][finding] = []
+                
+            self.image_findings[img_id][finding].append(bbox)
+    
+    def __len__(self):
+        return len(self.image_files)
+    
+    def __getitem__(self, idx):
+        # Get image filename
+        img_file = self.image_files[idx]
+        
+        # Load image
+        img_path = os.path.join(self.root_dir, img_file)
+        image = Image.open(img_path).convert('L')  # Convert to grayscale
+        
+        if self.transform:
+            image = self.transform(image)
+        
+        # Create multi-hot encoding for labels
+        label_tensor = torch.zeros(len(self.classes))
+        if img_file in self.image_findings:
+            for finding, bboxes in self.image_findings[img_file].items():
+                label_tensor[self.class_to_idx[finding]] = 1
+        
+        return image, label_tensor, img_file
+    
+def evaluate_multi_model(model, data_loader, device):
+    model.eval()
+    all_preds = []
+    all_labels = []
+    
+    with torch.no_grad():
+        for inputs, labels, filenames in data_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            outputs = model(inputs, filenames)
+            
+            # Apply sigmoid to get probabilities
+            probs = torch.sigmoid(outputs)
+            # Convert to binary predictions (threshold at 0.5)
+            preds = (probs > 0.5).float()
+            
+            all_preds.append(preds.cpu())
+            all_labels.append(labels.cpu())
+    
+    # Concatenate batch results
+    all_preds = torch.cat(all_preds)
+    all_labels = torch.cat(all_labels)
+    
+    # Calculate metrics
+    from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+    
+    # Sample-wise metrics
+    accuracy = accuracy_score(all_labels, all_preds)
+    f1 = f1_score(all_labels, all_preds, average='samples')
+    precision = precision_score(all_labels, all_preds, average='samples')
+    recall = recall_score(all_labels, all_preds, average='samples')
+    
+    print(f"Accuracy: {accuracy:.4f}")
+    print(f"F1 Score: {f1:.4f}")
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall: {recall:.4f}")
+    
+    return {
+        'accuracy': accuracy,
+        'f1': f1,
+        'precision': precision,
+        'recall': recall
+    }
+
+"""General functions begin here"""
 def save_model(model, save_path='xray_model.pth', save_metadata=True):
     """
     Save the trained model and optionally its metadata.
