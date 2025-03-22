@@ -1,4 +1,3 @@
-"""Any data visualizaiton
-
-Taking either inputs from the data processing steps or the data visualization part
+"""
+Any explatory data visualization to get an overview of what the data that is loaded in looks like it.
 """
