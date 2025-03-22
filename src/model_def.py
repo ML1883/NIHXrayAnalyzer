@@ -13,6 +13,7 @@ from tqdm import tqdm
 import os
 import pandas as pd
 from PIL import Image
+import polars as pl
 
 
 class FineTunedResNet18(nn.Module):
@@ -250,24 +251,28 @@ class MultiAttentionXrayCNN(nn.Module):
         if bbox_file_path:
             self.load_bbox_data(bbox_file_path)
     
-    def load_bbox_data(self, file_path):
-        import pandas as pd
-        bbox_data = pd.read_csv(file_path)
+
+    def process_bbox_data(file_path):
+        """Create a hashmap with findings"""
+        bbox_data = pl.read_csv(file_path)
         
-        # Create a nested dictionary: {image_index: {finding_label: [(x, y, w, h), ...]}}
-        for _, row in bbox_data.iterrows():
-            image_index = row['Image Index']
-            finding = row['Finding Label']
-            bbox = (row['x'], row['y'], row['w'], row['h'])
+        image_finding_map = {}
+        
+        for row in bbox_data.iter_rows(named=True):
+            image_index = row["Image Index"]
+            finding = row["Finding Label"]
+            bbox = (row["x"], row["y"], row["w"], row["h"])
             
-            if image_index not in self.image_finding_map:
-                self.image_finding_map[image_index] = {}
+            if image_index not in image_finding_map:
+                image_finding_map[image_index] = {}
             
-            if finding not in self.image_finding_map[image_index]:
-                self.image_finding_map[image_index][finding] = []
+            if finding not in image_finding_map[image_index]:
+                image_finding_map[image_index][finding] = []
             
-            self.image_finding_map[image_index][finding].append(bbox)
-    
+            image_finding_map[image_index][finding].append(bbox)
+        
+        return image_finding_map
+        
     def create_attention_mask(self, feature_map_size, bboxes, device):
         """Create Gaussian attention mask from multiple bounding boxes"""
         height, width = feature_map_size
