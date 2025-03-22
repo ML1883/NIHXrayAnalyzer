@@ -19,7 +19,7 @@ class FineTunedResNet18(nn.Module):
         super(FineTunedResNet18, self).__init__()
         
         # Load pretrained ResNet18 model
-        self.model = models.resnet18(weights='DEFAULT')
+        self.model = models.resnet18() # weights='DEFAULT'
         
         # Modify first conv layer to accept 1-channel grayscale instead of 3-channel RGB
         self.model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
@@ -97,7 +97,7 @@ class SimpleXrayCNN(nn.Module):
         )
         
         # Global average pooling to handle variable image sizes
-        self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
+        # self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
         
         self.classifier = nn.Sequential(
             nn.Flatten(),
@@ -111,7 +111,7 @@ class SimpleXrayCNN(nn.Module):
         # print(f"Input shape: {x.shape}")  # Check initial input shape
         x = self.features(x)
         # print(f"After feature shape: {x.shape}")  # (batch, 256, 4, 4)
-        x = self.global_pool(x)
+        # x = self.global_pool(x)
         x = self.classifier(x)
         return x
 
@@ -129,6 +129,10 @@ def setup_model_and_training(dataset_xrays, batch_size=16, learning_rate=0.001, 
         model = SimpleXrayCNN(num_classes=num_classes)
     elif model_type == "ResNet18":
         model = FineTunedResNet18(num_classes=num_classes)
+    elif model_type == "ResNet50":
+        model = FineTunedResNet50(num_classes=num_classes)
+    elif model_type == "DenseNet121":
+        model = FineTunedDenseNet121(num_classes=num_classes)
     model = model.to(device)
     print(f"Using device: {device}")
     
