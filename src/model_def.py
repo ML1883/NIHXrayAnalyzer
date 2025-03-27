@@ -124,9 +124,9 @@ def setup_model_and_training(dataset_xrays, batch_size=16, learning_rate=0.001, 
         data_loader = DataLoader(dataset_xrays, batch_size=batch_size, shuffle=True, num_workers=4)
     
     # Get number of classes
-    num_classes = len(dataset_xrays.classes)
+    num_classes = len(data_loader.classes)
     print(f"Number of classes: {num_classes}")
-    print(f"Classes: {dataset_xrays.classes}")
+    print(f"Classes: {data_loader.classes}")
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if model_type == "simpleCNN":
@@ -231,7 +231,8 @@ def train_multilabel_model(model, data_loader, criterion, optimizer, device, num
             # total += labels.size(0)
             # correct += (predicted == labels).sum().item()
         
-        epoch_loss = running_loss / len(data_loader.dataset)
+        epoch_loss = running_loss / len(data_loader)
+        print(f"Data loader length: {len(data_loader)}")
         # epoch_acc = correct / total
         print(f'Epoch {epoch+1}/{num_epochs}, Loss: {epoch_loss:.4f}')
     
@@ -440,6 +441,9 @@ class XrayMultiLabelDataset(Dataset):
             root_dir: Directory containing all images
             bbox_csv_path: Path to CSV with format (Image Index, Finding Label, x, y, w, h)
             transform: Image transformations
+
+            TODO: class findings based on the folders that an image is present in. Either from the CSV with findings of from the sort.
+            Process this in label tensor.
         """
     
         self.root_dir = root_dir
@@ -451,18 +455,18 @@ class XrayMultiLabelDataset(Dataset):
         bbox_data = pl.read_csv(bbox_csv_path, new_columns=["Image Index", "Finding Label", "x", "y", "w", "h"])
 
         #Only those actually present should be included.
-        bbox_data = bbox_data.filter(pl.col("Image Index").is_in(os.listdir(root_dir))
-)
+        bbox_data_filtered = bbox_data.filter(pl.col("Image Index").is_in(os.listdir(root_dir)))
+
         # Get all unique image filenames
         self.image_filenames = bbox_data.select("Image Index").unique()["Image Index"].to_list()
         
         # Get all unique finding labels (classes)
-        self.classes = sorted(bbox_data.select("Finding Label").unique()["Finding Label"].to_list())
+        self.classes = sorted(bbox_data_filtered.select("Finding Label").unique()["Finding Label"].to_list()) #TODO: adjust this variable too.
         self.class_to_idx = {cls: idx for idx, cls in enumerate(self.classes)}
         
         # Build a mapping from image to findings and bboxes
         self.image_findings = {}
-        for row in bbox_data.iter_rows(named=True): # for _, row in self.bbox_df.iterrows():
+        for row in bbox_data_filtered.iter_rows(named=True): # for _, row in self.bbox_df.iterrows():
             img_id = row['Image Index']
             finding = row['Finding Label']
             bbox = (row['x'], row['y'], row['w'], row['h'])
@@ -484,21 +488,25 @@ class XrayMultiLabelDataset(Dataset):
         
         # Load image
         img_path = os.path.join(self.root_dir, img_file)
-        image = Image.open(img_path).convert('L')  # Convert to grayscale
+        if os.path.exists(img_path):
+            image = Image.open(img_path).convert('L')  # Convert to grayscale
         
-        # Onconditional transformation to Torch tensor, no: if self.transform:
-        image = self.transform(image)  # Shape: (H, W) → (1, H, W)
+            # Onconditional transformation to Torch tensor, no: if self.transform:
+            image = self.transform(image)  # Shape: (H, W) → (1, H, W)
 
-        #Add a layer if needed, since we already have a greyscale pic.
-        if image.ndimension() == 3:  # Should be (1, H, W) already
-            image = image.unsqueeze(0)  # Add batch dimension → (1, 1, H, W)
-        
+            #Add a layer if needed, since we already have a greyscale pic.
+            if image.ndimension() == 3:  # Should be (1, H, W) already
+                image = image.unsqueeze(0)  # Add batch dimension → (1, 1, H, W)
+        else:
+            image = None
+
         # Create multi-hot encoding for labels
         label_tensor = torch.zeros(len(self.classes))
         if img_file in self.image_findings:
             for finding, bboxes in self.image_findings[img_file].items():
                 label_tensor[self.class_to_idx[finding]] = 1
-        
+        label_tensor = label_tensor.unsqueeze(0)
+
         return image, label_tensor, img_file
     
 
