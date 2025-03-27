@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torchvision.models as models
+from torchvision import transforms
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 import time
@@ -117,7 +118,10 @@ def setup_model_and_training(dataset_xrays, batch_size=16, learning_rate=0.001, 
     
     If using the multi attention model, this should be """
     # Create data loader
-    data_loader = DataLoader(dataset_xrays, batch_size=batch_size, shuffle=True, num_workers=4)
+    if model_type=="MultiAttention":
+        data_loader = XrayMultiLabelDataset(os.path.join("..", "data", "images_train"))
+    else:
+        data_loader = DataLoader(dataset_xrays, batch_size=batch_size, shuffle=True, num_workers=4)
     
     # Get number of classes
     num_classes = len(dataset_xrays.classes)
@@ -133,7 +137,7 @@ def setup_model_and_training(dataset_xrays, batch_size=16, learning_rate=0.001, 
         model = FineTunedResNet50(num_classes=num_classes)
     elif model_type == "DenseNet121":
         model = FineTunedDenseNet121(num_classes=num_classes)
-    elif model_type == "MultiAttenion":
+    elif model_type == "MultiAttention":
         model = MultiAttentionXrayCNN(num_classes=num_classes, bbox_file_path=bbpath)
     model = model.to(device)
     print(f"Using device: {device}")
@@ -191,16 +195,16 @@ def train_model(model, data_loader, criterion, optimizer, device, num_epochs=10)
     
     return model
 
-def train_multilabel_model(model, data_loader, device, num_epochs=10):
+def train_multilabel_model(model, data_loader, criterion, optimizer, device, num_epochs=10):
     """Should be combined with original function"""
     model.train()
     
     # Use Binary Cross Entropy loss for multi-label classification
-    criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    # criterion = nn.BCEWithLogitsLoss()
+    # optimizer = optim.Adam(model.parameters(), lr=0.001)
     
     # Build class mapping (finding name to index)
-    class_mapping = {class_name: idx for idx, class_name in enumerate(data_loader.dataset.classes)} # Which dataset?
+    class_mapping = {class_name: idx for idx, class_name in enumerate(data_loader.classes)} # Which dataset? 
     
     for epoch in range(num_epochs):
         running_loss = 0.0
@@ -211,10 +215,11 @@ def train_multilabel_model(model, data_loader, device, num_epochs=10):
             # Zero gradients
             optimizer.zero_grad()
             
-            # Forward pass with filenames and class mapping
+            # Forward pass with filenames and class mapping: What is this image according to the model?
+            # output is 15 probabilities of each finding
             outputs = model(inputs, filenames, class_mapping)
             
-            # Compute loss
+            # Compute loss: did we classify this image correctly?
             loss = criterion(outputs, labels)
             
             # Backward pass
@@ -222,8 +227,12 @@ def train_multilabel_model(model, data_loader, device, num_epochs=10):
             optimizer.step()
             
             running_loss += loss.item() * inputs.size(0)
+            # _, predicted = torch.max(outputs.data, 1)
+            # total += labels.size(0)
+            # correct += (predicted == labels).sum().item()
         
         epoch_loss = running_loss / len(data_loader.dataset)
+        # epoch_acc = correct / total
         print(f'Epoch {epoch+1}/{num_epochs}, Loss: {epoch_loss:.4f}')
     
     return model
@@ -291,10 +300,12 @@ class MultiAttentionXrayCNN(nn.Module):
             self.process_bbox_data(bbox_file_path)
     
 
-    def process_bbox_data(file_path):
+    def process_bbox_data(self, file_path):
         """Create a hashmap with bounding box data"""
-        bbox_data = pl.read_csv(file_path)
-        
+        bbox_data = pl.read_csv(file_path, new_columns=["Image Index", "Finding Label", "x", "y", "w", "h"])
+        #Only those actually present should be included. If we dont do this here and in the class dataset definition we get different outputs
+        bbox_data = bbox_data.filter(pl.col("Image Index").is_in(os.listdir(os.path.join("..", "data", "images_train"))))
+
         image_finding_map = {}
         
         for row in bbox_data.iter_rows(named=True):
@@ -362,8 +373,11 @@ class MultiAttentionXrayCNN(nn.Module):
         _, _, height, width = features.shape
         
         # Initialize combined features
-        combined_features = torch.zeros_like(features)
-        
+        # combined_features = torch.zeros_like(features)
+        # Initialize combined features with a clone of features to avoid modifying the original tensor
+        combined_features = features.clone()
+
+
         # Process each image with its specific findings
         for i, filename in enumerate(image_filenames):
             # Get all class-specific attentions
@@ -396,17 +410,19 @@ class MultiAttentionXrayCNN(nn.Module):
                 if all_attentions:
                     # Average or max-pool the attended features across all findings
                     # (design choice: you could use different aggregation methods)
-                    combined_features[i] = torch.cat([attn[1] for attn in all_attentions]).mean(dim=0)
-                else:
-                    # No bounding boxes, use original features
-                    combined_features[i] = features[i]
-            else:
-                # No bounding boxes for this image, use original features
-                combined_features[i] = features[i]
+                    # combined_features[i] = torch.cat([attn[1] for attn in all_attentions]).mean(dim=0)
+                    combined_features[i] = torch.mean(torch.stack(all_attentions), dim=0)
+    
+            #     else:
+            #         # File name found but no bboxes provided, use original features
+            #         combined_features[i] = features[i]
+            # else:
+            #     # No bounding boxes for this image, use original features
+            #     combined_features[i] = features[i]
         
-        # If no bounding box data was used at all, just use the original features
-        if torch.sum(combined_features) == 0:
-            combined_features = features
+        # If no bounding box data was used at all, just use the original features. No modifications made.
+        if torch.all(combined_features == features):
+            combined_features = features.clone()
         
         # Classify the attended features
         outputs = self.classifier(combined_features)
@@ -415,7 +431,7 @@ class MultiAttentionXrayCNN(nn.Module):
 
 
 class XrayMultiLabelDataset(Dataset):
-    def __init__(self, root_dir, bbox_csv_path, transform=None):
+    def __init__(self, root_dir, bbox_csv_path=os.path.join("..", "data", "classification", "BBox_List_2017.csv"), transform=None):
         """
         An extension of the standard dataset approach that handles multiple labels per image
         and incorporates bounding box information.
@@ -425,22 +441,28 @@ class XrayMultiLabelDataset(Dataset):
             bbox_csv_path: Path to CSV with format (Image Index, Finding Label, x, y, w, h)
             transform: Image transformations
         """
+    
         self.root_dir = root_dir
-        self.transform = transform
+        self.transform = transform if transform else transforms.Compose([
+            transforms.ToTensor()  # Converts PIL image to tensor
+        ])
         
         # Load bounding box data
-        self.bbox_df = pd.read_csv(bbox_csv_path)
-        
+        bbox_data = pl.read_csv(bbox_csv_path, new_columns=["Image Index", "Finding Label", "x", "y", "w", "h"])
+
+        #Only those actually present should be included.
+        bbox_data = bbox_data.filter(pl.col("Image Index").is_in(os.listdir(root_dir))
+)
         # Get all unique image filenames
-        self.image_files = self.bbox_df['Image Index'].unique()
+        self.image_filenames = bbox_data.select("Image Index").unique()["Image Index"].to_list()
         
         # Get all unique finding labels (classes)
-        self.classes = sorted(self.bbox_df['Finding Label'].unique())
+        self.classes = sorted(bbox_data.select("Finding Label").unique()["Finding Label"].to_list())
         self.class_to_idx = {cls: idx for idx, cls in enumerate(self.classes)}
         
         # Build a mapping from image to findings and bboxes
         self.image_findings = {}
-        for _, row in self.bbox_df.iterrows():
+        for row in bbox_data.iter_rows(named=True): # for _, row in self.bbox_df.iterrows():
             img_id = row['Image Index']
             finding = row['Finding Label']
             bbox = (row['x'], row['y'], row['w'], row['h'])
@@ -454,18 +476,22 @@ class XrayMultiLabelDataset(Dataset):
             self.image_findings[img_id][finding].append(bbox)
     
     def __len__(self):
-        return len(self.image_files)
+        return len(self.image_filenames)
     
     def __getitem__(self, idx):
         # Get image filename
-        img_file = self.image_files[idx]
+        img_file = self.image_filenames[idx]
         
         # Load image
         img_path = os.path.join(self.root_dir, img_file)
         image = Image.open(img_path).convert('L')  # Convert to grayscale
         
-        if self.transform:
-            image = self.transform(image)
+        # Onconditional transformation to Torch tensor, no: if self.transform:
+        image = self.transform(image)  # Shape: (H, W) → (1, H, W)
+
+        #Add a layer if needed, since we already have a greyscale pic.
+        if image.ndimension() == 3:  # Should be (1, H, W) already
+            image = image.unsqueeze(0)  # Add batch dimension → (1, 1, H, W)
         
         # Create multi-hot encoding for labels
         label_tensor = torch.zeros(len(self.classes))
