@@ -10,8 +10,6 @@ import pandas as pd
 from PIL import Image
 import polars as pl
 
-bbpath = os.path.join("..", "data", "classification", "BBox_List_2017.csv")
-
 class FineTunedResNet18(nn.Module):
     def __init__(self, num_classes):
         super(FineTunedResNet18, self).__init__()
@@ -138,7 +136,7 @@ def setup_model_and_training(dataset_xrays, batch_size=16, learning_rate=0.001, 
     elif model_type == "DenseNet121":
         model = FineTunedDenseNet121(num_classes=num_classes)
     elif model_type == "MultiAttention":
-        model = MultiAttentionXrayCNN(num_classes=num_classes, bbox_file_path=bbpath)
+        model = MultiAttentionXrayCNN(num_classes=num_classes)
     model = model.to(device)
     print(f"Using device: {device}")
     
@@ -239,7 +237,7 @@ def train_multilabel_model(model, data_loader, criterion, optimizer, device, num
     return model
 
 class MultiAttentionXrayCNN(nn.Module):
-    def __init__(self, num_classes, bbox_file_path=None):
+    def __init__(self, num_classes, bbox_file_path=os.path.join("..", "data", "classification", "BBox_List_2017.csv")):
         super(MultiAttentionXrayCNN, self).__init__()
         
         # Base CNN backbone (same as before)
@@ -298,17 +296,24 @@ class MultiAttentionXrayCNN(nn.Module):
         # Load and structure bounding box data
         self.image_finding_map = {}
         if bbox_file_path:
-            self.process_bbox_data(bbox_file_path)
+            self.process_bbox_data()
     
 
-    def process_bbox_data(self, file_path):
+    def process_bbox_data(self, bbox_csv_path=os.path.join("..", "data", "classification", "BBox_List_2017.csv"),
+                            data_entry_path=os.path.join("..", "data", "classification", "Data_Entry_2017_v2020.csv"),
+                            folder_with_cutoff_images=os.path.join("..", "data", "images_train")):
         """Create a hashmap with bounding box data"""
-        bbox_data = pl.read_csv(file_path, new_columns=["Image Index", "Finding Label", "x", "y", "w", "h"])
+        bbox_data = pl.read_csv(bbox_csv_path, new_columns=["Image Index", "Finding Label", "x", "y", "w", "h"])
         #Only those actually present should be included. If we dont do this here and in the class dataset definition we get different outputs
-        bbox_data = bbox_data.filter(pl.col("Image Index").is_in(os.listdir(os.path.join("..", "data", "images_train"))))
+        bbox_data = bbox_data.filter(pl.col("Image Index").is_in(os.listdir(folder_with_cutoff_images)))
+        bbox_data = bbox_data.with_columns(pl.col("Image Index").str.replace("Infiltrate", "Infiltration"), literal=True)
+
+        data_entry_data = pl.read_csv(data_entry_path)
+        data_entry_data = data_entry_data.filter(pl.col("Image Index").is_in(os.listdir(folder_with_cutoff_images)))
 
         image_finding_map = {}
         
+        # Get the bounding box data and insert it
         for row in bbox_data.iter_rows(named=True):
             image_index = row["Image Index"]
             finding = row["Finding Label"]
@@ -320,10 +325,22 @@ class MultiAttentionXrayCNN(nn.Module):
             if finding not in image_finding_map[image_index]:
                 image_finding_map[image_index][finding] = []
             
-            image_finding_map[image_index][finding].append(bbox)
+            image_finding_map[image_index][finding].append(bbox)    
+    
+        # and now for those without bounding boxes.
+        for row in data_entry_data.iter_rows(named=True): # for _, row in self.bbox_df.iterrows():
+            img_id = row['Image Index']
+            findings = [f.strip() for f in row['Finding Labels'].split('|')]
+            
+            if img_id not in image_finding_map:
+                image_finding_map[img_id] = {}
+            
+            for finding in findings:
+                if finding not in image_finding_map[img_id]:
+                    image_finding_map[img_id][finding] = []
         
         return image_finding_map
-        
+
     def create_attention_mask(self, feature_map_size, bboxes, device):
         """Create Gaussian attention mask from multiple bounding boxes"""
         height, width = feature_map_size
@@ -389,7 +406,7 @@ class MultiAttentionXrayCNN(nn.Module):
                 # For each class/finding that appears in this image
                 for finding, bboxes in self.image_finding_map[filename].items():
                     # Get class index from class name
-                    if class_mapping and finding in class_mapping:
+                    if class_mapping and bboxes and finding in class_mapping: # Check if bboxes even is filled or just empty.
                         class_idx = class_mapping[finding]
                         
                         # Create attention mask from bounding boxes for this finding
@@ -432,7 +449,7 @@ class MultiAttentionXrayCNN(nn.Module):
 
 
 class XrayMultiLabelDataset(Dataset):
-    def __init__(self, root_dir, bbox_csv_path=os.path.join("..", "data", "classification", "BBox_List_2017.csv"), transform=None):
+    def __init__(self, root_dir, bbox_csv_path=os.path.join("..", "data", "classification", "BBox_List_2017.csv"), data_entry_path=os.path.join("..", "data", "classification", "Data_Entry_2017_v2020.csv"), transform=None):
         """
         An extension of the standard dataset approach that handles multiple labels per image
         and incorporates bounding box information.
@@ -451,22 +468,29 @@ class XrayMultiLabelDataset(Dataset):
             transforms.ToTensor()  # Converts PIL image to tensor
         ])
         
-        # Load bounding box data
-        bbox_data = pl.read_csv(bbox_csv_path, new_columns=["Image Index", "Finding Label", "x", "y", "w", "h"])
+        # Load bounding box data and data entry data
+        bbox_data = pl.read_csv(bbox_csv_path, new_columns=["Image Index", "Finding Label", "x", "y", "w", "h"]) 
+        # rename Infiltrate to Infiltration so that it matches the findings data.
+        bbox_data = bbox_data.with_columns(pl.col("Image Index").str.replace("Infiltrate", "Infiltration"), literal=True)
+
+
+        data_entry_data = pl.read_csv(data_entry_path)
+        data_entry_data = data_entry_data.filter(pl.col("Image Index").is_in(os.listdir(root_dir)))
 
         #Only those actually present should be included.
-        bbox_data_filtered = bbox_data.filter(pl.col("Image Index").is_in(os.listdir(root_dir)))
+        bbox_data = bbox_data.filter(pl.col("Image Index").is_in(os.listdir(root_dir)))
 
         # Get all unique image filenames
-        self.image_filenames = bbox_data.select("Image Index").unique()["Image Index"].to_list()
-        
+        # self.image_filenames = bbox_data.select("Image Index").unique()["Image Index"].to_list() 
+        self.image_filenames = os.listdir(root_dir)
+
         # Get all unique finding labels (classes)
-        self.classes = sorted(bbox_data_filtered.select("Finding Label").unique()["Finding Label"].to_list()) #TODO: adjust this variable too.
+        self.classes =  data_entry_data.get_column('Finding Labels').str.split('|').map_elements(lambda x: [f.strip() for f in x], return_dtype=pl.List(pl.Utf8)).explode().unique() # sorted(bbox_data_filtered.select("Finding Label").unique()["Finding Label"].to_list()) #TODO: adjust this variable too.
         self.class_to_idx = {cls: idx for idx, cls in enumerate(self.classes)}
         
         # Build a mapping from image to findings and bboxes
         self.image_findings = {}
-        for row in bbox_data_filtered.iter_rows(named=True): # for _, row in self.bbox_df.iterrows():
+        for row in bbox_data.iter_rows(named=True): # for _, row in self.bbox_df.iterrows():
             img_id = row['Image Index']
             finding = row['Finding Label']
             bbox = (row['x'], row['y'], row['w'], row['h'])
@@ -477,7 +501,20 @@ class XrayMultiLabelDataset(Dataset):
             if finding not in self.image_findings[img_id]:
                 self.image_findings[img_id][finding] = []
                 
+            # We add it, but its not used in the context of this class
             self.image_findings[img_id][finding].append(bbox)
+
+        # and now for those without bounding boxes.
+        for row in data_entry_data.iter_rows(named=True): # for _, row in self.bbox_df.iterrows():
+            img_id = row['Image Index']
+            findings = [f.strip() for f in row['Finding Labels'].split('|')]
+            
+            if img_id not in self.image_findings:
+                self.image_findings[img_id] = {}
+            
+            for finding in findings:
+                if finding not in self.image_findings[img_id]:
+                    self.image_findings[img_id][finding] = []
     
     def __len__(self):
         return len(self.image_filenames)
@@ -501,9 +538,10 @@ class XrayMultiLabelDataset(Dataset):
             image = None
 
         # Create multi-hot encoding for labels
+        # This needs  to be done with data entry
         label_tensor = torch.zeros(len(self.classes))
         if img_file in self.image_findings:
-            for finding, bboxes in self.image_findings[img_file].items():
+            for finding, _ in self.image_findings[img_file].items(): #BBoxes not used 
                 label_tensor[self.class_to_idx[finding]] = 1
         label_tensor = label_tensor.unsqueeze(0)
 
