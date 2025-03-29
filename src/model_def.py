@@ -111,7 +111,7 @@ class SimpleXrayCNN(nn.Module):
         x = self.classifier(x)
         return x
 
-def setup_model_and_training(dataset_xrays, batch_size=16, learning_rate=0.001, model_type="simpleCNN", model_mode="single", path_multi=os.path.join("..", "data", "images_train")):
+def setup_model_and_training(dataset_xrays=None, batch_size=16, learning_rate=0.0001, model_type="simpleCNN", model_mode="single", path_multi=os.path.join("..", "data", "images_train")):
     """Sets up a model, loads data into a dataloader and defines the modeltype and the model mode according to wishes
     
     If using the multi attention model, this should be """
@@ -149,7 +149,7 @@ def setup_model_and_training(dataset_xrays, batch_size=16, learning_rate=0.001, 
     
     return model, data_loader, criterion, optimizer, device
 
-def setup_dataloader(dataset_xrays, batch_size=16, num_workers=4, shuffle=True, model_type="single", path_multi=os.path.join("..", "data", "images_train")):
+def setup_dataloader(dataset_xrays=None, batch_size=16, num_workers=4, shuffle=True, model_type="single", path_multi=os.path.join("..", "data", "images_train")):
     """Create a dataloader"""
     if model_type=="MultiAttention":
         data_loader = XrayMultiLabelDataset(path_multi)
