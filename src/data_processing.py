@@ -2,7 +2,7 @@ import os
 import shutil
 import polars as pl
 
-def organize_images(csv_path, image_folder, output_folder, image_column="Image Index", label_column="Finding Labels"):
+def organize_images_by_label_folder(csv_path, image_folder, output_folder, image_column="Image Index", label_column="Finding Labels"):
     """
     Organizes images from the given folder into subfolders based on diagnoses found in the CSV file.
     
@@ -57,3 +57,43 @@ def organize_images(csv_path, image_folder, output_folder, image_column="Image I
         if os.path.isdir(subobject_path):
             num_files = len([f for f in os.listdir(subobject_path) if os.path.isfile(os.path.join(subobject_path, f))])
             print(f"Diagnosis {subobject}: {num_files} Xray(s)")
+
+
+def sort_images_train_test(source_folder=os.path.join("..", "data", "images_raw", "images"), train_folder=os.path.join("..", "data", "images_train"), test_folder=os.path.join("..", "data", "images_test"), N=10000, train_ratio=0.7):
+    """
+    Sorts image files from the source folder into train and test folders.
+
+    Args:
+        source_folder (str): Path to the folder containing the images.
+        train_folder (str): Path to the train folder.
+        test_folder (str): Path to the test folder.
+        N (int): Number of images to process, sorted by name in ascending order.
+        train_ratio (float): Ratio of images to be placed in the train folder (default is 0.7).
+
+    Returns:
+        None
+    """
+    
+    # Make sure destinations folders are empty and excist. Otherwise skip
+    if os.path.exists(train_folder) and os.path.exists(test_folder) and not os.listdir(train_folder) and not os.listdir(test_folder):
+        
+        # Get image files sorted by name
+        image_files = sorted([f for f in os.listdir(source_folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
+        
+        # Limit to N images
+        selected_images = image_files[:N]
+        
+        # Compute split index
+        # TODO: add some randemization here.
+        train_count = int(len(selected_images) * train_ratio)
+        
+        # Move images to respective folders
+        for i, image in enumerate(selected_images):
+            src_path = os.path.join(source_folder, image)
+            dest_folder = train_folder if i < train_count else test_folder
+            dest_path = os.path.join(dest_folder, image)
+            shutil.copy(src_path, dest_path)
+            
+        print(f"Sorted {len(selected_images)} images: {train_count} to train, {len(selected_images) - train_count} to test.")
+    else:
+        print("No files transferred since destiantion folders aren't empty or they simply don't excist.")

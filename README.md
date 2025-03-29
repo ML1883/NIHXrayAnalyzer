@@ -1,5 +1,7 @@
 # NIHXrayAnalyzer
-Simple image classification using the NIHCC chest xray dataset and Python.
+Simple image classification model using the NIHCC chest xray dataset and Python.
+
+It uses a relatively standard 5 layer CNN model augmented by Gaussian attention layers that are trained by using bounding box data provided with the dataset.
 
 This mostly to try out image classification methods, different neural nets, etc.
 
