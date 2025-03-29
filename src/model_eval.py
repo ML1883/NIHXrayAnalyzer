@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, jaccard_score
 import matplotlib.pyplot as plt
 import seaborn as sns
 import time
@@ -8,11 +8,26 @@ from tqdm import tqdm
 import pandas as pd
 
 
-
-def evaluate_multi_model(model, data_loader, device):
+def evaluate_multi_model(model, data_loader, device, class_names=None, visualize=True):
+    """
+    Comprehensive evaluation for multi-label models with visualizations.
+    
+    Args:
+        model (nn.Module): The trained model
+        data_loader (DataLoader): DataLoader for the dataset
+        device (torch.device): Device to run evaluation on
+        class_names (list): Optional list of class names
+        visualize (bool): Whether to visualize results
+        
+    Returns:
+        dict: Evaluation metrics
+    """
+    start_time = time.time()
+    
     model.eval()
     all_preds = []
     all_labels = []
+    all_confidences = []
     
     with torch.no_grad():
         for inputs, labels, filenames in data_loader:
@@ -21,36 +36,127 @@ def evaluate_multi_model(model, data_loader, device):
             
             # Apply sigmoid to get probabilities
             probs = torch.sigmoid(outputs)
-            # Convert to binary predictions (threshold at 0.5)
             preds = (probs > 0.5).float()
             
             all_preds.append(preds.cpu())
             all_labels.append(labels.cpu())
+            all_confidences.append(probs.cpu())
     
-    # Concatenate batch results
-    all_preds = torch.cat(all_preds)
-    all_labels = torch.cat(all_labels)
+    all_preds = torch.cat(all_preds).numpy()
+    all_labels = torch.cat(all_labels).numpy()
+    all_confidences = torch.cat(all_confidences).numpy()
     
     # Calculate metrics
-    from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-    
-    # Sample-wise metrics
     accuracy = accuracy_score(all_labels, all_preds)
     f1 = f1_score(all_labels, all_preds, average='samples')
-    precision = precision_score(all_labels, all_preds, average='samples')
-    recall = recall_score(all_labels, all_preds, average='samples')
+    precision = precision_score(all_labels, all_preds, average='samples', zero_division=0)
+    recall = recall_score(all_labels, all_preds, average='samples', zero_division=0)
+    avg_confidence = np.mean(all_confidences)
+    jaccard = jaccard_score(all_labels, all_preds, average='samples')
     
+    metrics = {
+        'accuracy': accuracy,
+        'f1_score': f1,
+        'precision': precision,
+        'recall': recall,
+        'avg_confidence': avg_confidence,
+        'jaccard_similarity': jaccard,
+        'samples_evaluated': len(all_labels),
+        'evaluation_time': time.time() - start_time
+    }
+    
+    if class_names:
+        per_class_metrics = {}
+        per_class_cms = {}
+
+
+        if all_labels.shape[1] == 1:  # Ensuring it's not multi-label for confusion matrix
+                cm = confusion_matrix(all_labels.ravel(), all_preds.ravel())
+                metrics['confusion_matrix'] = cm
+                
+                if visualize:
+                    plt.figure(figsize=(10, 8))
+                    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=class_names, yticklabels=class_names)
+                    plt.xlabel('Predicted')
+                    plt.ylabel('True')
+                    plt.title('Confusion Matrix')
+                    plt.tight_layout()
+                    plt.show()
+
+        
+        for i, class_name in enumerate(class_names):
+            class_preds = all_preds[:, i]
+            class_labels = all_labels[:, i]
+            
+            class_accuracy = accuracy_score(class_labels, class_preds)
+            class_precision = precision_score(class_labels, class_preds, zero_division=0)
+            class_recall = recall_score(class_labels, class_preds, zero_division=0)
+            class_f1 = f1_score(class_labels, class_preds, zero_division=0)
+            class_confidence = np.mean(all_confidences[:, i])
+            
+            per_class_metrics[class_name] = {
+                'accuracy': class_accuracy,
+                'precision': class_precision,
+                'recall': class_recall,
+                'f1_score': class_f1,
+                'confidence': class_confidence
+            }
+            
+            # Per-Class Confusion Matrix
+            cm = confusion_matrix(class_labels, class_preds)
+            per_class_cms[class_name] = cm
+            
+            if visualize:
+                plt.figure(figsize=(6, 5))
+                sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+                plt.xlabel('Predicted')
+                plt.ylabel('True')
+                plt.title(f'Confusion Matrix - {class_name}')
+                plt.tight_layout()
+                plt.show()
+        
+        metrics['class_metrics'] = per_class_metrics
+        metrics['per_class_confusion_matrices'] = per_class_cms
+        
+        # Normalized Heatmap for False Positives/Negatives
+        if visualize:
+            error_matrix = np.abs(all_preds - all_labels).mean(axis=0)
+            plt.figure(figsize=(10, 6))
+            sns.heatmap(error_matrix.reshape(1, -1), annot=True, cmap='coolwarm', xticklabels=class_names, yticklabels=['Error Rate'])
+            plt.title('Per-Class False Positive/Negative Rates')
+            plt.tight_layout()
+            plt.show()
+        
+        # Per-Class Accuracy Visualization
+        if visualize:
+            class_accs = [metrics['class_metrics'][c]['accuracy'] for c in class_names]
+            plt.figure(figsize=(12, 6))
+            bars = plt.bar(class_names, class_accs)
+            plt.axhline(y=accuracy, color='r', linestyle='-', label=f'Overall Accuracy: {accuracy:.3f}')
+            plt.ylabel('Accuracy')
+            plt.title('Per-Class Accuracy')
+            plt.xticks(rotation=45, ha='right')
+            
+            for bar in bars:
+                height = bar.get_height()
+                plt.text(bar.get_x() + bar.get_width()/2., height + 0.01,
+                        f'{height:.3f}', ha='center', va='bottom')
+            plt.legend()
+            plt.tight_layout()
+            plt.show()
+    
+    print("======= Evaluation Results =======")
     print(f"Accuracy: {accuracy:.4f}")
     print(f"F1 Score: {f1:.4f}")
     print(f"Precision: {precision:.4f}")
     print(f"Recall: {recall:.4f}")
+    print(f"Jaccard Similarity: {jaccard:.4f}")
+    print(f"Average Confidence: {avg_confidence:.4f}")
+    print(f"Samples Evaluated: {metrics['samples_evaluated']}")
+    print(f"Evaluation Time: {metrics['evaluation_time']:.2f} seconds")
     
-    return {
-        'accuracy': accuracy,
-        'f1': f1,
-        'precision': precision,
-        'recall': recall
-    }
+    return metrics
+
 
 
 def predict_single(model, image_tensor, device, class_names=None, return_probs=False):
@@ -99,7 +205,7 @@ def predict_single(model, image_tensor, device, class_names=None, return_probs=F
 
 def predict_batch(model, data_loader, device, max_samples=None):
     """
-    Make predictions for a batch of images.
+    Make predictions for a batch of images. Only for single prediction models
     
     Args:
         model (nn.Module): The trained model
@@ -139,7 +245,7 @@ def predict_batch(model, data_loader, device, max_samples=None):
 
 def evaluate_model(model, data_loader, device, class_names=None, max_samples=None, visualize=True):
     """
-    Comprehensive model evaluation with detailed metrics.
+    Comprehensive model evaluation with detailed metrics. Only for single prediction models.
     
     Args:
         model (nn.Module): The trained model
@@ -243,9 +349,9 @@ def evaluate_model(model, data_loader, device, class_names=None, max_samples=Non
     
     return metrics
 
-def visualize_predictions(model, dataset, device, indices=None, num_examples=5, class_names=None):
+def visualize_predictions_single(model, dataset, device, indices=None, num_examples=5, class_names=None):
     """
-    Visualize model predictions on example images.
+    Visualize model predictions on example images. Only for single prediciton models
     
     Args:
         model (nn.Module): The trained model
@@ -314,7 +420,7 @@ def visualize_predictions(model, dataset, device, indices=None, num_examples=5, 
 
 def analyze_misclassifications(model, data_loader, device, class_names=None, max_samples=100):
     """
-    Analyze and summarize misclassifications.
+    Analyze and summarize misclassifications. Only for single models
     
     Args:
         model (nn.Module): The trained model
@@ -415,7 +521,7 @@ def analyze_misclassifications(model, data_loader, device, class_names=None, max
 
 def find_hard_examples(model, data_loader, device, n=5, class_names=None):
     """
-    Find the hardest examples to classify based on confidence.
+    Find the hardest examples to classify based on confidence. Only for single prediction models.
     
     Args:
         model (nn.Module): The trained model
