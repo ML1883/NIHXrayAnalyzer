@@ -111,13 +111,13 @@ class SimpleXrayCNN(nn.Module):
         x = self.classifier(x)
         return x
 
-def setup_model_and_training(dataset_xrays, batch_size=16, learning_rate=0.001, model_type="simpleCNN", model_mode="single"):
+def setup_model_and_training(dataset_xrays, batch_size=16, learning_rate=0.001, model_type="simpleCNN", model_mode="single", path_multi=os.path.join("..", "data", "images_train")):
     """Sets up a model, loads data into a dataloader and defines the modeltype and the model mode according to wishes
     
     If using the multi attention model, this should be """
     # Create data loader
     if model_type=="MultiAttention":
-        data_loader = XrayMultiLabelDataset(os.path.join("..", "data", "images_train"))
+        data_loader = XrayMultiLabelDataset(path_multi)
     else:
         data_loader = DataLoader(dataset_xrays, batch_size=batch_size, shuffle=True, num_workers=4)
     
@@ -149,9 +149,12 @@ def setup_model_and_training(dataset_xrays, batch_size=16, learning_rate=0.001, 
     
     return model, data_loader, criterion, optimizer, device
 
-def setup_dataloader(dataset_xrays, batch_size=16, num_workers=4, shuffle=True):
+def setup_dataloader(dataset_xrays, batch_size=16, num_workers=4, shuffle=True, model_type="single", path_multi=os.path.join("..", "data", "images_train")):
     """Create a dataloader"""
-    data_loader = DataLoader(dataset_xrays, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+    if model_type=="MultiAttention":
+        data_loader = XrayMultiLabelDataset(path_multi)
+    else:
+        data_loader = DataLoader(dataset_xrays, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
     
     return data_loader
 
@@ -306,7 +309,7 @@ class MultiAttentionXrayCNN(nn.Module):
         bbox_data = pl.read_csv(bbox_csv_path, new_columns=["Image Index", "Finding Label", "x", "y", "w", "h"])
         #Only those actually present should be included. If we dont do this here and in the class dataset definition we get different outputs
         bbox_data = bbox_data.filter(pl.col("Image Index").is_in(os.listdir(folder_with_cutoff_images)))
-        bbox_data = bbox_data.with_columns(pl.col("Image Index").str.replace("Infiltrate", "Infiltration"), literal=True)
+        bbox_data = bbox_data.with_columns(pl.col("Finding Label").str.replace("Infiltrate", "Infiltration"))
 
         data_entry_data = pl.read_csv(data_entry_path)
         data_entry_data = data_entry_data.filter(pl.col("Image Index").is_in(os.listdir(folder_with_cutoff_images)))
@@ -471,7 +474,7 @@ class XrayMultiLabelDataset(Dataset):
         # Load bounding box data and data entry data
         bbox_data = pl.read_csv(bbox_csv_path, new_columns=["Image Index", "Finding Label", "x", "y", "w", "h"]) 
         # rename Infiltrate to Infiltration so that it matches the findings data.
-        bbox_data = bbox_data.with_columns(pl.col("Image Index").str.replace("Infiltrate", "Infiltration"), literal=True)
+        bbox_data = bbox_data.with_columns(pl.col("Finding Label").str.replace("Infiltrate", "Infiltration"))
 
 
         data_entry_data = pl.read_csv(data_entry_path)
@@ -546,6 +549,11 @@ class XrayMultiLabelDataset(Dataset):
         label_tensor = label_tensor.unsqueeze(0)
 
         return image, label_tensor, img_file
+    
+    def get_labels(self) -> list:
+        """Get the labels we are using"""
+        return [key for key in self.class_to_idx]
+        
     
 
 """General functions begin here"""
