@@ -116,15 +116,18 @@ def setup_model_and_training(dataset_xrays=None, batch_size=16, learning_rate=0.
     
     If using the multi attention model, this should be """
     # Create data loader
-    if model_type=="MultiAttention":
-        data_loader = XrayMultiLabelDataset(path_multi)
+    if model_type == "MultiAttention":
+        dataset = XrayMultiLabelDataset(path_multi)
     else:
-        data_loader = DataLoader(dataset_xrays, batch_size=batch_size, shuffle=True, num_workers=4)
+        dataset = dataset_xrays
+
+    # Wrap dataset in DataLoader
+    data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4)
     
     # Get number of classes
-    num_classes = len(data_loader.classes)
+    num_classes = len(data_loader.dataset.classes)
     print(f"Number of classes: {num_classes}")
-    print(f"Classes: {data_loader.classes}")
+    print(f"Classes: {data_loader.dataset.classes}")
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if model_type == "simpleCNN":
@@ -151,10 +154,13 @@ def setup_model_and_training(dataset_xrays=None, batch_size=16, learning_rate=0.
 
 def setup_dataloader(dataset_xrays=None, batch_size=16, num_workers=4, shuffle=True, model_type="single", path_multi=os.path.join("..", "data", "images_train")):
     """Create a dataloader"""
-    if model_type=="MultiAttention":
-        data_loader = XrayMultiLabelDataset(path_multi)
+    if model_type == "MultiAttention":
+        dataset = XrayMultiLabelDataset(path_multi)
     else:
-        data_loader = DataLoader(dataset_xrays, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+        dataset = dataset_xrays
+
+    # Wrap dataset in DataLoader
+    data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4)
     
     return data_loader
 
@@ -205,7 +211,7 @@ def train_multilabel_model(model, data_loader, criterion, optimizer, device, num
     # optimizer = optim.Adam(model.parameters(), lr=0.001)
     
     # Build class mapping (finding name to index)
-    class_mapping = {class_name: idx for idx, class_name in enumerate(data_loader.classes)} # Which dataset? 
+    class_mapping = {class_name: idx for idx, class_name in enumerate(data_loader.dataset.classes)} # Which dataset? 
     
     for epoch in range(num_epochs):
         running_loss = 0.0
@@ -531,12 +537,11 @@ class XrayMultiLabelDataset(Dataset):
         if os.path.exists(img_path):
             image = Image.open(img_path).convert('L')  # Convert to grayscale
         
-            # Onconditional transformation to Torch tensor, no: if self.transform:
+            # transformation to Torch tensor
             image = self.transform(image)  # Shape: (H, W) → (1, H, W)
 
-            #Add a layer if needed, since we already have a greyscale pic.
-            if image.ndimension() == 3:  # Should be (1, H, W) already
-                image = image.unsqueeze(0)  # Add batch dimension → (1, 1, H, W)
+            if image.ndimension() == 2:  # Should be (1, H, W) already. This should be 3 if not using batch sizes
+                image = image.unsqueeze(0)  # Add batch dimension → (1, H, W)
         else:
             image = None
 
@@ -546,7 +551,7 @@ class XrayMultiLabelDataset(Dataset):
         if img_file in self.image_findings:
             for finding, _ in self.image_findings[img_file].items(): #BBoxes not used 
                 label_tensor[self.class_to_idx[finding]] = 1
-        label_tensor = label_tensor.unsqueeze(0)
+        # label_tensor = label_tensor.unsqueeze(0) # Not needed when using batches. 
 
         return image, label_tensor, img_file
     
