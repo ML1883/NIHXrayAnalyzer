@@ -476,8 +476,10 @@ def setup_model_and_training(dataset_xrays=None, batch_size=16, learning_rate=0.
     elif model_mode == "multi":
         # Add class weighting in loss function to prevent overfitting on no findings
         targets = torch.zeros(len(dataset), num_classes)
-        for i, (_, label) in enumerate(dataset):
-            targets[i] = label
+        for i in range(len(dataset)):
+            _, label_tensor, _ = dataset[i]
+            targets[i] = label_tensor
+            
         pos_counts = targets.sum(0)
         neg_counts = len(targets) - pos_counts
         pos_weight = neg_counts / pos_counts.clamp(min=1)
