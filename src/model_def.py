@@ -125,35 +125,35 @@ class MultiAttentionXrayCNN(nn.Module):
             nn.Conv2d(1, 16, kernel_size=7, stride=2, padding=3),  # Output: 16 x 512 x 512
             nn.BatchNorm2d(16),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.4), #Prevent overfitting
+            nn.Dropout(0.3), #Prevent overfitting
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1),  # Output: 16 x 256 x 256
             
             # Second convolutional block
             nn.Conv2d(16, 32, kernel_size=5, stride=2, padding=2),  # Output: 32 x 128 x 128
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.4),
+            nn.Dropout(0.3),
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1),  # Output: 32 x 64 x 64
 
             # Third convolutional block
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),  # Output: 64 x 32 x 32
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.4),
+            nn.Dropout(0.3),
             nn.MaxPool2d(kernel_size=2, stride=2),  # Output: 64 x 16 x 16
             
             # Fourth convolutional block
             nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),  # Output: 128 x 16 x 16
             nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.4),
+            nn.Dropout(0.3),
             nn.MaxPool2d(kernel_size=2, stride=2),  # Output: 128 x 8 x 8
             
             # Fifth convolutional block
             nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),  # Output: 256 x 8 x 8
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.4),
+            nn.Dropout(0.3),
             nn.MaxPool2d(kernel_size=2, stride=2),  # Output: 256 x 4 x 4
         )
         
@@ -164,7 +164,7 @@ class MultiAttentionXrayCNN(nn.Module):
                 nn.BatchNorm2d(64),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(64, 1, kernel_size=1),
-                nn.Dropout(0.4),
+                nn.Dropout(0.3),
                 nn.Sigmoid()
             ) for _ in range(num_classes)
         ])
@@ -267,7 +267,10 @@ class MultiAttentionXrayCNN(nn.Module):
         return mask.unsqueeze(0)  # Add channel dimension
     
     def forward(self, x, image_filenames=None, class_mapping=None):
-        """Forward pass of the model"""
+        """Forward pass of the model
+        
+        TODO: test if changing the order to the front instead of attention layer on the backend makes a noticeable difference.
+        """
         # batch_size = x.shape[0]
         device = x.device
         
