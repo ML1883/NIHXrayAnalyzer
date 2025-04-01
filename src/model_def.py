@@ -125,36 +125,36 @@ class MultiAttentionXrayCNN(nn.Module):
             nn.Conv2d(1, 16, kernel_size=7, stride=2, padding=3),  # Output: 16 x 512 x 512
             nn.BatchNorm2d(16),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.3), #Prevent overfitting
+            # nn.Dropout(0.2), #Prevent overfitting
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1),  # Output: 16 x 256 x 256
             
             # Second convolutional block
             nn.Conv2d(16, 32, kernel_size=5, stride=2, padding=2),  # Output: 32 x 128 x 128
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.3),
+            # nn.Dropout(0.2),
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1),  # Output: 32 x 64 x 64
 
             # Third convolutional block
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),  # Output: 64 x 32 x 32
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.3),
+            # nn.Dropout(0.2),
             nn.MaxPool2d(kernel_size=2, stride=2),  # Output: 64 x 16 x 16
             
             # Fourth convolutional block
-            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),  # Output: 128 x 16 x 16
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.3),
-            nn.MaxPool2d(kernel_size=2, stride=2),  # Output: 128 x 8 x 8
-            
-            # Fifth convolutional block
-            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),  # Output: 256 x 8 x 8
+            nn.Conv2d(64, 256, kernel_size=3, stride=1, padding=1),  # New output: 256 X 16 X 16  Old Output: 128 x 16 x 16
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.3),
-            nn.MaxPool2d(kernel_size=2, stride=2),  # Output: 256 x 4 x 4
+            # nn.Dropout(0.2),
+            nn.MaxPool2d(kernel_size=4, stride=4),  # New output.: 256 X 4 X 4 Old Output: 128 x 8 x 8
+            
+            # Fifth convolutional block
+            # nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),  # Output: 256 x 8 x 8
+            # nn.BatchNorm2d(256),
+            # nn.ReLU(inplace=True),
+            # nn.Dropout(0.25),
+            # nn.MaxPool2d(kernel_size=2, stride=2),  # Output: 256 x 4 x 4
         )
         
         # Finding-specific attention modules (one per class)
@@ -164,7 +164,7 @@ class MultiAttentionXrayCNN(nn.Module):
                 nn.BatchNorm2d(64),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(64, 1, kernel_size=1),
-                nn.Dropout(0.3),
+                # nn.Dropout(0.2),
                 nn.Sigmoid()
             ) for _ in range(num_classes)
         ])
@@ -346,9 +346,6 @@ class XrayMultiLabelDataset(Dataset):
             root_dir: Directory containing all images
             bbox_csv_path: Path to CSV with format (Image Index, Finding Label, x, y, w, h)
             transform: Image transformations
-
-            TODO: class findings based on the folders that an image is present in. Either from the CSV with findings of from the sort.
-            Process this in label tensor.
         """
     
         self.root_dir = root_dir
@@ -375,7 +372,7 @@ class XrayMultiLabelDataset(Dataset):
         self.image_filenames = os.listdir(root_dir)
 
         # Get all unique finding labels (classes)
-        self.classes =  data_entry_data.get_column('Finding Labels').str.split('|').map_elements(lambda x: [f.strip() for f in x], return_dtype=pl.List(pl.Utf8)).explode().unique() # sorted(bbox_data_filtered.select("Finding Label").unique()["Finding Label"].to_list()) #TODO: adjust this variable too.
+        self.classes =  data_entry_data.get_column('Finding Labels').str.split('|').map_elements(lambda x: [f.strip() for f in x], return_dtype=pl.List(pl.Utf8)).explode().unique()
         self.class_to_idx = {cls: idx for idx, cls in enumerate(self.classes)}
         
         # Build a mapping from image to findings and bboxes
