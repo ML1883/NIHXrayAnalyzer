@@ -9,7 +9,7 @@ import os
 import pandas as pd
 from PIL import Image
 import polars as pl
-
+from torch.utils.tensorboard import SummaryWriter
 
 class FineTunedResNet18(nn.Module):
     def __init__(self, num_classes):
@@ -125,28 +125,28 @@ class MultiAttentionXrayCNN(nn.Module):
             nn.Conv2d(1, 16, kernel_size=7, stride=2, padding=3),  # Output: 16 x 512 x 512
             nn.BatchNorm2d(16),
             nn.ReLU(inplace=True),
-            # nn.Dropout(0.2), #Prevent overfitting
+            nn.Dropout2d(0.1),
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1),  # Output: 16 x 256 x 256
             
             # Second convolutional block
             nn.Conv2d(16, 32, kernel_size=5, stride=2, padding=2),  # Output: 32 x 128 x 128
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
-            # nn.Dropout(0.2),
+            nn.Dropout2d(0.1),
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1),  # Output: 32 x 64 x 64
 
             # Third convolutional block
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),  # Output: 64 x 32 x 32
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
-            # nn.Dropout(0.2),
+            nn.Dropout2d(0.1),
             nn.MaxPool2d(kernel_size=2, stride=2),  # Output: 64 x 16 x 16
             
             # Fourth convolutional block
             nn.Conv2d(64, 256, kernel_size=3, stride=1, padding=1),  # New output: 256 X 16 X 16  Old Output: 128 x 16 x 16
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
-            # nn.Dropout(0.2),
+            nn.Dropout2d(0.1),
             nn.MaxPool2d(kernel_size=4, stride=4),  # New output.: 256 X 4 X 4 Old Output: 128 x 8 x 8
             
             # Fifth convolutional block
@@ -164,7 +164,7 @@ class MultiAttentionXrayCNN(nn.Module):
                 nn.BatchNorm2d(64),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(64, 1, kernel_size=1),
-                # nn.Dropout(0.2),
+                nn.Dropout2d(0.1),
                 nn.Sigmoid()
             ) for _ in range(num_classes)
         ])
@@ -318,13 +318,6 @@ class MultiAttentionXrayCNN(nn.Module):
                     # (design choice: you could use different aggregation methods)
                     # combined_features[i] = torch.cat([attn[1] for attn in all_attentions]).mean(dim=0)
                     combined_features[i] = torch.mean(torch.stack(all_attentions), dim=0)
-    
-            #     else:
-            #         # File name found but no bboxes provided, use original features
-            #         combined_features[i] = features[i]
-            # else:
-            #     # No bounding boxes for this image, use original features
-            #     combined_features[i] = features[i]
         
         # If no bounding box data was used at all, just use the original features. No modifications made.
         if torch.all(combined_features == features):
@@ -357,8 +350,7 @@ class XrayMultiLabelDataset(Dataset):
         
         # Load bounding box data and data entry data
         bbox_data = pl.read_csv(bbox_csv_path, new_columns=["Image Index", "Finding Label", "x", "y", "w", "h"]) 
-        # rename Infiltrate to Infiltration so that it matches the findings data.
-        bbox_data = bbox_data.with_columns(pl.col("Finding Label").str.replace("Infiltrate", "Infiltration"))
+        bbox_data = bbox_data.with_columns(pl.col("Finding Label").str.replace("Infiltrate", "Infiltration")) #The definition between the findings and bbox should match
 
 
         data_entry_data = pl.read_csv(data_entry_path)
@@ -540,21 +532,22 @@ def train_model(model, data_loader, criterion, optimizer, device, num_epochs=10)
     return model
 
 
-def train_multilabel_model(model, data_loader, criterion, optimizer, device, num_epochs=10):
+def train_multilabel_model(model, data_loader, criterion, optimizer, device, num_epochs=10, data_loader_test=None, basename="CNNMultiAttent"):
     """Should be combined with original function"""
+    run_name = f"{basename}{time.strftime('%Y%m%d%H%M')}"
+    writer = SummaryWriter(f"runs/{run_name}")
+    
     model.train()
     
-    # Use Binary Cross Entropy loss for multi-label classification
-    # criterion = nn.BCEWithLogitsLoss()
-    # optimizer = optim.Adam(model.parameters(), lr=0.001)
+    writer.add_text('Model Architecture', str(model), 0)  # Save model architecture as text
     
     # Build class mapping (finding name to index)
-    class_mapping = {class_name: idx for idx, class_name in enumerate(data_loader.dataset.classes)} # Which dataset? 
+    class_mapping = {class_name: idx for idx, class_name in enumerate(data_loader.dataset.classes)}
     
     for epoch in range(num_epochs):
         running_loss = 0.0
         
-        for inputs, labels, filenames in data_loader:
+        for idx, (inputs, labels, filenames) in enumerate(data_loader):
             inputs, labels = inputs.to(device), labels.to(device)
             
             # Zero gradients
@@ -575,16 +568,55 @@ def train_multilabel_model(model, data_loader, criterion, optimizer, device, num
             # _, predicted = torch.max(outputs.data, 1)
             # total += labels.size(0)
             # correct += (predicted == labels).sum().item()
+
+            # You can also log batch-level metrics if needed
+            writer.add_scalar('batch_loss', loss.detach().item(), epoch * len(data_loader) + idx)
         
         epoch_loss = running_loss / len(data_loader)
+        writer.add_scalar('training_loss', epoch_loss, epoch)
+
+        for name, param in model.named_parameters():
+            writer.add_histogram(f'param/{name}', param, epoch)
+            if param.grad is not None:
+                writer.add_histogram(f'grad/{name}', param.grad, epoch)
+
+
         print(f"Data loader length: {len(data_loader)}")
         # epoch_acc = correct / total
         print(f'Epoch {epoch+1}/{num_epochs}, Loss: {epoch_loss:.4f}')
+        
+        # If we have validation data
+        if data_loader_test:
+            val_loss = validate(model, data_loader_test, criterion, device, class_mapping)
+            writer.add_scalar('validation_loss', val_loss, epoch)
+
     
+    writer.close()
     return model
 
 
 """General functions begin here"""
+def validate(model, val_loader, criterion, device, class_mapping):
+    model.eval()
+    running_loss = 0.0
+    
+    # Disable gradient calculation for validation
+    with torch.no_grad():
+        for inputs, labels, filenames in val_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            
+            # Forward pass
+            outputs = model(inputs, filenames, class_mapping)
+            
+            # Compute loss
+            loss = criterion(outputs, labels)
+            
+            running_loss += loss.mean().item() * inputs.size(0)
+    
+    val_loss = running_loss / len(val_loader)
+    return val_loss
+
+
 def save_model(model, save_path='xray_model.pth', save_metadata=True):
     """
     Save the trained model and optionally its metadata.
@@ -651,3 +683,19 @@ def load_model(model_class, model_path, num_classes, device=None):
             print(f"{key}: {value}")
     
     return model
+
+
+
+if __name__ == "__main__":
+    os.chdir("src")
+
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5], std=[0.5]),
+        transforms.Grayscale(num_output_channels=1), 
+    ])
+    model, data_loader, criterion, optimizer, device = setup_model_and_training(None, model_type="MultiAttention", batch_size=16, model_mode="multi", learning_rate=0.00001)
+    # data_loader_test = md.XrayMultiLabelDataset(os.path.join("data", "images_test"))
+    # model = md.train_model(model, data_loader, criterion, optimizer, device, num_epochs=5)
+    data_loader_test = setup_dataloader(None, path_multi=os.path.join("..", "data", "images_test"), model_type="MultiAttention") # dataset_xrays_test
+    model = train_multilabel_model(model, data_loader, criterion, optimizer, device, num_epochs=10)

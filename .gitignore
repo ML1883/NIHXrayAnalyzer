@@ -178,3 +178,4 @@ data/
 .venv/
 output/
 .vscode
+notebooks/runs/
