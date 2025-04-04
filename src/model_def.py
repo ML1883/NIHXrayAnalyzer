@@ -167,7 +167,6 @@ class MultiAttentionXrayCNN(nn.Module):
                 nn.BatchNorm2d(64),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(64, 1, kernel_size=1),
-                nn.Dropout(0.3),
                 nn.Sigmoid()
             ) for _ in range(num_classes)
         ])
@@ -177,7 +176,7 @@ class MultiAttentionXrayCNN(nn.Module):
             nn.Flatten(),
             nn.Linear(256 * 4 * 4, 512),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.5),
+            nn.Dropout(0.7),
             nn.Linear(512, num_classes)
         )
         
