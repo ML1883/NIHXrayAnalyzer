@@ -10,6 +10,9 @@ import pandas as pd
 from PIL import Image
 import polars as pl
 from torch.utils.tensorboard import SummaryWriter
+from io import StringIO
+import json
+from sklearn.metrics import accuracy_score, f1_score
 
 class FineTunedResNet18(nn.Module):
     def __init__(self, num_classes):
@@ -125,29 +128,29 @@ class MultiAttentionXrayCNN(nn.Module):
             nn.Conv2d(1, 16, kernel_size=7, stride=2, padding=3),  # Output: 16 x 512 x 512
             nn.BatchNorm2d(16),
             nn.ReLU(inplace=True),
-            nn.Dropout2d(0.1),
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1),  # Output: 16 x 256 x 256
+            # nn.Dropout(0.2),
             
             # Second convolutional block
             nn.Conv2d(16, 32, kernel_size=5, stride=2, padding=2),  # Output: 32 x 128 x 128
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
-            nn.Dropout2d(0.1),
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1),  # Output: 32 x 64 x 64
+            # nn.Dropout(0.2),
 
             # Third convolutional block
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),  # Output: 64 x 32 x 32
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
-            nn.Dropout2d(0.1),
             nn.MaxPool2d(kernel_size=2, stride=2),  # Output: 64 x 16 x 16
-            
+            # nn.Dropout(0.2),
+
             # Fourth convolutional block
             nn.Conv2d(64, 256, kernel_size=3, stride=1, padding=1),  # New output: 256 X 16 X 16  Old Output: 128 x 16 x 16
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
-            nn.Dropout2d(0.1),
             nn.MaxPool2d(kernel_size=4, stride=4),  # New output.: 256 X 4 X 4 Old Output: 128 x 8 x 8
+            # nn.Dropout(0.2),
             
             # Fifth convolutional block
             # nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),  # Output: 256 x 8 x 8
@@ -164,7 +167,7 @@ class MultiAttentionXrayCNN(nn.Module):
                 nn.BatchNorm2d(64),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(64, 1, kernel_size=1),
-                nn.Dropout2d(0.1),
+                nn.Dropout(0.3),
                 nn.Sigmoid()
             ) for _ in range(num_classes)
         ])
@@ -344,7 +347,9 @@ class XrayMultiLabelDataset(Dataset):
         self.root_dir = root_dir
         self.transform = transform if transform else transforms.Compose([
             transforms.ToTensor(),  # Converts PIL image to tensor
-            transforms.Normalize(mean=[0.5], std=[0.5])
+            transforms.Normalize(mean=[0.5], std=[0.5]),
+            transforms.RandomHorizontalFlip(p=0.5),
+            # transforms.RandomRotation(degrees=5),
             # transforms.Grayscale(num_output_channels=1)
         ])
         
@@ -539,8 +544,6 @@ def train_multilabel_model(model, data_loader, criterion, optimizer, device, num
     
     model.train()
     
-    writer.add_text('Model Architecture', str(model), 0)  # Save model architecture as text
-    
     # Build class mapping (finding name to index)
     class_mapping = {class_name: idx for idx, class_name in enumerate(data_loader.dataset.classes)}
     
@@ -587,18 +590,226 @@ def train_multilabel_model(model, data_loader, criterion, optimizer, device, num
         
         # If we have validation data
         if data_loader_test:
-            val_loss = validate(model, data_loader_test, criterion, device, class_mapping)
-            writer.add_scalar('validation_loss', val_loss, epoch)
+            val_loss, val_acc, val_f1 = validate(model, data_loader_test, criterion, device, class_mapping)
+            
+            # Log validation metrics to TensorBoard
+            writer.add_scalar('Validation/Loss', val_loss, epoch)
+            writer.add_scalar('Validation/Accuracy', val_acc, epoch)
+            writer.add_scalar('Validation/F1_Score', val_f1, epoch)
 
     
+    model_description = get_model_description(model, None, device=device)
+    writer.add_text('Model/Architecture', model_description, 0)
+
     writer.close()
     return model
 
 
 """General functions begin here"""
-def validate(model, val_loader, criterion, device, class_mapping):
+def get_model_description(model, input_shape=None, device=None):
+    """
+    Generate a comprehensive description of a PyTorch model including architecture,
+    layer details, parameters, and hyperparameters.
+    
+    Args:
+        model: The PyTorch model
+        input_shape: Optional tuple of input dimensions (excluding batch dimension)
+                    Example: (3, 224, 224) for RGB images
+    
+    Returns:
+        String containing formatted model description in Markdown
+    """
+    # Get a string representation of the model architecture
+    model_str = str(model)
+    
+    # Count parameters
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    
+    # Get detailed information about each layer
+    layer_info = []
+    
+    for name, module in model.named_modules():
+        # Skip the model itself and container modules with no parameters
+        if module is model or (not list(module.parameters()) and 
+                             not isinstance(module, (nn.ReLU, nn.MaxPool2d, nn.AvgPool2d, 
+                                                  nn.Flatten, nn.Softmax, nn.Sigmoid))):
+            continue
+            
+        # Get module type
+        module_type = module.__class__.__name__
+        
+        # Get module-specific hyperparameters
+        params = {}
+        
+        # Convolutional layers
+        if isinstance(module, nn.Conv1d):
+            params = {
+                "in_channels": module.in_channels,
+                "out_channels": module.out_channels,
+                "kernel_size": module.kernel_size,
+                "stride": module.stride,
+                "padding": module.padding,
+                "dilation": module.dilation,
+                "groups": module.groups,
+                "bias": module.bias is not None
+            }
+        elif isinstance(module, nn.Conv2d):
+            params = {
+                "in_channels": module.in_channels,
+                "out_channels": module.out_channels,
+                "kernel_size": module.kernel_size,
+                "stride": module.stride,
+                "padding": module.padding,
+                "dilation": module.dilation,
+                "groups": module.groups,
+                "bias": module.bias is not None
+            }
+        # Pooling layers
+        elif isinstance(module, nn.MaxPool2d) or isinstance(module, nn.AvgPool2d):
+            params = {
+                "kernel_size": module.kernel_size,
+                "stride": module.stride,
+                "padding": module.padding
+            }
+        # Batch normalization
+        elif isinstance(module, nn.BatchNorm1d) or isinstance(module, nn.BatchNorm2d):
+            params = {
+                "num_features": module.num_features,
+                "eps": module.eps,
+                "momentum": module.momentum,
+                "affine": module.affine,
+                "track_running_stats": module.track_running_stats
+            }
+        # Linear layers
+        elif isinstance(module, nn.Linear):
+            params = {
+                "in_features": module.in_features,
+                "out_features": module.out_features,
+                "bias": module.bias is not None
+            }
+        # Dropout layers
+        elif isinstance(module, nn.Dropout):
+            params = {"p": module.p}
+        elif isinstance(module, nn.Dropout2d):
+            params = {"p": module.p}
+        # Activation functions
+        elif isinstance(module, nn.ReLU):
+            params = {"inplace": module.inplace}
+        elif isinstance(module, nn.LeakyReLU):
+            params = {"negative_slope": module.negative_slope, "inplace": module.inplace}
+        # Recurrent layers
+        elif isinstance(module, nn.LSTM):
+            params = {
+                "input_size": module.input_size,
+                "hidden_size": module.hidden_size,
+                "num_layers": module.num_layers,
+                "bias": module.bias,
+                "batch_first": module.batch_first,
+                "dropout": module.dropout,
+                "bidirectional": module.bidirectional
+            }
+        elif isinstance(module, nn.GRU):
+            params = {
+                "input_size": module.input_size,
+                "hidden_size": module.hidden_size,
+                "num_layers": module.num_layers,
+                "bias": module.bias,
+                "batch_first": module.batch_first,
+                "dropout": module.dropout,
+                "bidirectional": module.bidirectional
+            }
+        elif isinstance(module, nn.Embedding):
+            params = {
+                "num_embeddings": module.num_embeddings,
+                "embedding_dim": module.embedding_dim,
+                "padding_idx": module.padding_idx
+            }
+            
+        # Calculate parameters for this layer
+        layer_params = sum(p.numel() for p in module.parameters())
+        trainable_layer_params = sum(p.numel() for p in module.parameters() if p.requires_grad)
+        
+        layer_info.append({
+            "name": name,
+            "type": module_type,
+            "params": params,
+            "param_count": layer_params,
+            "trainable_param_count": trainable_layer_params
+        })
+    
+    # Format everything nicely using Markdown for TensorBoard
+    output = StringIO()
+    output.write("# Model Architecture Summary\n\n")
+    
+    output.write("## Model Structure\n```\n")
+    output.write(model_str)
+    output.write("\n```\n\n")
+    
+    output.write("## Parameter Counts\n")
+    output.write(f"Total parameters: {total_params:,}\n")
+    output.write(f"Trainable parameters: {trainable_params:,}\n")
+    output.write(f"Non-trainable parameters: {total_params - trainable_params:,}\n\n")
+    
+    # Calculate model size in MB
+    model_size_mb = total_params * 4 / (1024 * 1024)  # Assuming float32 parameters
+    output.write(f"Approximate model size (in memory): {model_size_mb:.2f} MB\n\n")
+    
+    # Layer details in a table format
+    output.write("## Layer Details\n\n")
+    output.write("| Layer | Type | Parameters | Trainable | Details |\n")
+    output.write("|-------|------|------------|-----------|--------|\n")
+    
+    for layer in layer_info:
+        # Format parameters as pretty JSON
+        param_str = json.dumps(layer["params"], indent=2).replace('\n', '<br>').replace(' ', '&nbsp;')
+        output.write(f"| {layer['name']} | {layer['type']} | {layer['param_count']:,} | {layer['trainable_param_count']:,} | {param_str} |\n")
+    
+    # If input shape is provided, calculate output shapes
+    if input_shape is not None:
+        try:
+            output.write("\n## Layer Output Shapes\n\n")
+            output.write("| Layer | Output Shape |\n")
+            output.write("|-------|-------------|\n")
+            
+            # Register a forward hook to capture output sizes
+            output_shapes = {}
+            
+            def hook_fn(module, input, output):
+                # Convert output tensor or tuple of tensors to a string representation of their shapes
+                if isinstance(output, torch.Tensor):
+                    output_shapes[module] = tuple(output.shape)
+                elif isinstance(output, tuple) and all(isinstance(o, torch.Tensor) for o in output):
+                    output_shapes[module] = tuple(tuple(o.shape) for o in output)
+            
+            hooks = []
+            for name, module in model.named_modules():
+                if module is not model:  # Skip the model itself
+                    hooks.append(module.register_forward_hook(hook_fn))
+            
+            # Forward pass with dummy input
+            dummy_input = torch.zeros(1, *input_shape)
+            model(dummy_input, device)
+            
+            # Remove hooks
+            for hook in hooks:
+                hook.remove()
+            
+            # Output the shapes
+            for name, module in model.named_modules():
+                if module is not model and module in output_shapes:
+                    output.write(f"| {name} | {output_shapes[module]} |\n")
+                    
+        except Exception as e:
+            output.write(f"\nCould not calculate output shapes: {str(e)}\n")
+    
+    return output.getvalue()
+
+def validate(model, val_loader, criterion, device, class_mapping, threshold=0.5):
     model.eval()
     running_loss = 0.0
+    all_preds = []
+    all_labels = []
     
     # Disable gradient calculation for validation
     with torch.no_grad():
@@ -606,15 +817,24 @@ def validate(model, val_loader, criterion, device, class_mapping):
             inputs, labels = inputs.to(device), labels.to(device)
             
             # Forward pass
-            outputs = model(inputs, filenames, class_mapping)
-            
-            # Compute loss
+            outputs = model(inputs, filenames, class_mapping)  # Shape: [batch_size, 15]
             loss = criterion(outputs, labels)
-            
             running_loss += loss.mean().item() * inputs.size(0)
-    
-    val_loss = running_loss / len(val_loader)
-    return val_loss
+            
+            # Convert probabilities to binary predictions
+            probs = torch.sigmoid(outputs)  # Apply sigmoid to get probabilities
+            preds = (probs > threshold).int()  # Thresholding at 0.5
+            
+            # Store predictions and true labels
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+
+    # Compute final loss, accuracy, and F1-score
+    val_loss = running_loss / len(val_loader.dataset)
+    accuracy = accuracy_score(all_labels, all_preds)  # Multi-label accuracy
+    f1 = f1_score(all_labels, all_preds, average='samples')  # Adjusted for multi-label
+
+    return val_loss, accuracy, f1
 
 
 def save_model(model, save_path='xray_model.pth', save_metadata=True):
@@ -698,4 +918,4 @@ if __name__ == "__main__":
     # data_loader_test = md.XrayMultiLabelDataset(os.path.join("data", "images_test"))
     # model = md.train_model(model, data_loader, criterion, optimizer, device, num_epochs=5)
     data_loader_test = setup_dataloader(None, path_multi=os.path.join("..", "data", "images_test"), model_type="MultiAttention") # dataset_xrays_test
-    model = train_multilabel_model(model, data_loader, criterion, optimizer, device, num_epochs=10)
+    model = train_multilabel_model(model, data_loader, criterion, optimizer, device, num_epochs=2)
