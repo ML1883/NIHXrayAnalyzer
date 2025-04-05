@@ -128,29 +128,31 @@ class MultiAttentionXrayCNN(nn.Module):
             nn.Conv2d(1, 16, kernel_size=7, stride=2, padding=3),  # Output: 16 x 512 x 512
             nn.BatchNorm2d(16),
             nn.ReLU(inplace=True),
+            nn.Dropout(0.1),
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1),  # Output: 16 x 256 x 256
-            # nn.Dropout(0.2),
+            
             
             # Second convolutional block
             nn.Conv2d(16, 32, kernel_size=5, stride=2, padding=2),  # Output: 32 x 128 x 128
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
+            nn.Dropout(0.2),
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1),  # Output: 32 x 64 x 64
-            # nn.Dropout(0.2),
 
             # Third convolutional block
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),  # Output: 64 x 32 x 32
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
             nn.MaxPool2d(kernel_size=2, stride=2),  # Output: 64 x 16 x 16
-            # nn.Dropout(0.2),
+            
 
             # Fourth convolutional block
             nn.Conv2d(64, 256, kernel_size=3, stride=1, padding=1),  # New output: 256 X 16 X 16  Old Output: 128 x 16 x 16
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
+            nn.Dropout(0.4),
             nn.MaxPool2d(kernel_size=4, stride=4),  # New output.: 256 X 4 X 4 Old Output: 128 x 8 x 8
-            # nn.Dropout(0.2),
             
             # Fifth convolutional block
             # nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),  # Output: 256 x 8 x 8
@@ -166,6 +168,7 @@ class MultiAttentionXrayCNN(nn.Module):
                 nn.Conv2d(256, 64, kernel_size=1),
                 nn.BatchNorm2d(64),
                 nn.ReLU(inplace=True),
+                nn.Dropout(0.1),
                 nn.Conv2d(64, 1, kernel_size=1),
                 nn.Sigmoid()
             ) for _ in range(num_classes)
@@ -176,7 +179,7 @@ class MultiAttentionXrayCNN(nn.Module):
             nn.Flatten(),
             nn.Linear(256 * 4 * 4, 512),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.7),
+            nn.Dropout(0.9),
             nn.Linear(512, num_classes)
         )
         
@@ -348,7 +351,7 @@ class XrayMultiLabelDataset(Dataset):
             transforms.ToTensor(),  # Converts PIL image to tensor
             transforms.Normalize(mean=[0.5], std=[0.5]),
             transforms.RandomHorizontalFlip(p=0.5),
-            # transforms.RandomRotation(degrees=5),
+            transforms.RandomRotation(degrees=5),
             # transforms.Grayscale(num_output_channels=1)
         ])
         

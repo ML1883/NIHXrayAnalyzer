@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, jaccard_score
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, jaccard_score, auc, roc_curve
 import matplotlib.pyplot as plt
 import seaborn as sns
 import time
@@ -87,31 +87,53 @@ def evaluate_multi_model(model, data_loader, device, class_names=None, visualize
         for i, class_name in enumerate(class_names):
             class_preds = all_preds[:, i]
             class_labels = all_labels[:, i]
+            class_probs = all_confidences[:, i]  # Using the confidence scores (raw probabilities)
             
+            # Existing metrics
             class_accuracy = accuracy_score(class_labels, class_preds)
             class_precision = precision_score(class_labels, class_preds, zero_division=0)
             class_recall = recall_score(class_labels, class_preds, zero_division=0)
             class_f1 = f1_score(class_labels, class_preds, zero_division=0)
             class_confidence = np.mean(all_confidences[:, i])
             
+            # Calculate ROC curve and AUC
+            fpr, tpr, thresholds = roc_curve(class_labels, class_probs)
+            roc_auc = auc(fpr, tpr)
+            
+            # Add AUC to metrics
             per_class_metrics[class_name] = {
                 'accuracy': class_accuracy,
                 'precision': class_precision,
                 'recall': class_recall,
                 'f1_score': class_f1,
-                'confidence': class_confidence
+                'confidence': class_confidence,
+                'auc': roc_auc
             }
-            
+
             # Per-Class Confusion Matrix
             cm = confusion_matrix(class_labels, class_preds)
             per_class_cms[class_name] = cm
             
             if visualize:
+                # Confusion Matrix
                 plt.figure(figsize=(6, 5))
                 sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
                 plt.xlabel('Predicted')
                 plt.ylabel('True')
                 plt.title(f'Confusion Matrix - {class_name}')
+                plt.tight_layout()
+                plt.show()
+
+                # Plot ROC curve
+                plt.figure(figsize=(6, 5))
+                plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (area = {roc_auc:.2f})')
+                plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+                plt.xlim([0.0, 1.0])
+                plt.ylim([0.0, 1.05])
+                plt.xlabel('False Positive Rate')
+                plt.ylabel('True Positive Rate')
+                plt.title(f'ROC Curve - {class_name}')
+                plt.legend(loc="lower right")
                 plt.tight_layout()
                 plt.show()
         
