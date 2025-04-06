@@ -178,6 +178,8 @@ class MultiAttentionXrayCNN(nn.Module):
         self.classifier = nn.Sequential(
             nn.Flatten(),
             nn.Linear(256 * 4 * 4, 512),
+            # nn.Dropout(0.6),
+            # nn.Linear(768, 256),
             nn.ReLU(inplace=True),
             nn.Dropout(0.9),
             nn.Linear(512, num_classes)
