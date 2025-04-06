@@ -1,7 +1,12 @@
 # NIHXrayAnalyzer
 Image classification model using the NIHCC chest xray dataset and Python.
 
-It uses a relatively standard 5 layer CNN model augmented by Gaussian attention layers that are trained by using bounding box data provided with the dataset. Note that not all pictures have bounding box data and that the effect of the attention layers can be rather limited, depending on the finding that it is trying to classify (some are more predictable in terms of location than others.)
+The model consists of the following parts:
+1. 4 layers of CNN
+2. Gaussian attention layers using bounding box data which is aviable for 1k of the >100k pictures
+3. Standard neural nets to classify 
+
+The best performance seems to be achieved by a high dropout penalty in part 3 of the model. I suspect that if you want to have production ready models you are probably best of making a specialized model that is trained on a diagnoses-by-diagnoses sample. Then you could probably also tell the CNN in case of smaller diagnoses like masses and such to look more specifically for that diagnosis. This could be enhanced by more bounding box data to come to a great model. I say this because the evaluation of the models constantly shows that the 'larger' (i.e. takes up more space visually) a diagnosis is, the better the AUC. You can see this in the main notebook where I made some ROC curves. This of course also has some implications of the practical usability of the model (the 'larger' a diagnosis is, the more obvious it is to spot).   
 
 The NIH dataset can be found in this article: https://www.nih.gov/news-events/news-releases/nih-clinical-center-provides-one-largest-publicly-available-chest-x-ray-datasets-scientific-community
 

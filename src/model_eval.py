@@ -167,6 +167,56 @@ def evaluate_multi_model(model, data_loader, device, class_names=None, visualize
             plt.tight_layout()
             plt.show()
     
+
+        # Calculate micro-average ROC curve and AUC (treats the entire prediction matrix as binary)
+        fpr_micro, tpr_micro, _ = roc_curve(all_labels.ravel(), all_confidences.ravel())
+        roc_auc_micro = auc(fpr_micro, tpr_micro)
+
+        # Calculate macro-average ROC curve and AUC (average across all classes)
+        # First, collect all class fprs and tprs
+        all_fpr = np.unique(np.concatenate([fpr for i, (fpr, tpr, _) in enumerate(
+            [roc_curve(all_labels[:, i], all_confidences[:, i]) for i in range(len(class_names))])]))
+
+        # Then interpolate all ROC curves at these points
+        mean_tpr = np.zeros_like(all_fpr)
+        for i in range(len(class_names)):
+            fpr, tpr, _ = roc_curve(all_labels[:, i], all_confidences[:, i])
+            mean_tpr += np.interp(all_fpr, fpr, tpr)
+
+        # Average and compute AUC
+        mean_tpr /= len(class_names)
+        roc_auc_macro = auc(all_fpr, mean_tpr)
+
+        # Add to metrics
+        metrics['micro_avg_auc'] = roc_auc_micro
+        metrics['macro_avg_auc'] = roc_auc_macro
+
+        # Plot the general ROC curves if visualize is True
+        if visualize:
+            plt.figure(figsize=(10, 8))
+            
+            # Plot micro-average ROC curve
+            plt.plot(fpr_micro, tpr_micro, 
+                    label=f'Micro-average ROC curve (area = {roc_auc_micro:.2f})',
+                    color='deeppink', linestyle=':', linewidth=4)
+            
+            # Plot macro-average ROC curve
+            plt.plot(all_fpr, mean_tpr, 
+                    label=f'Macro-average ROC curve (area = {roc_auc_macro:.2f})',
+                    color='navy', linestyle=':', linewidth=4)
+            
+            # Plot diagonal
+            plt.plot([0, 1], [0, 1], 'k--', lw=2)
+            
+            plt.xlim([0.0, 1.0])
+            plt.ylim([0.0, 1.05])
+            plt.xlabel('False Positive Rate')
+            plt.ylabel('True Positive Rate')
+            plt.title('General ROC Curves for All Classes')
+            plt.legend(loc="lower right")
+            plt.grid(True)
+            plt.tight_layout()
+            plt.show()
     print("======= Evaluation Results =======")
     print(f"Accuracy: {accuracy:.4f}")
     print(f"F1 Score: {f1:.4f}")
@@ -174,6 +224,8 @@ def evaluate_multi_model(model, data_loader, device, class_names=None, visualize
     print(f"Recall: {recall:.4f}")
     print(f"Jaccard Similarity: {jaccard:.4f}")
     print(f"Average Confidence: {avg_confidence:.4f}")
+    print(f"Micro AUC all classes : {metrics['micro_avg_auc']:.2f}")
+    print(f"Macro AUC all classes : {metrics['macro_avg_auc']:.2f}")
     print(f"Samples Evaluated: {metrics['samples_evaluated']}")
     print(f"Evaluation Time: {metrics['evaluation_time']:.2f} seconds")
     
